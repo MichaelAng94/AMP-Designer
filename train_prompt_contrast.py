@@ -4,6 +4,7 @@ import random
 import time
 import torch
 import argparse
+import logging
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
@@ -14,9 +15,14 @@ from transformers.models.gpt2 import GPT2LMHeadModel
 from transformers import BertTokenizer
 from torch.nn import CrossEntropyLoss
 
-from pytorchtools import EarlyStopping
+from early_stop.pytorchtools import EarlyStopping
 from soft_prompt_embedding import SoftEmbedding
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 class MyDataset(Dataset):
     def __init__(self, data_list):
@@ -157,6 +163,9 @@ def prompt_contrast_train(args, model, train_dataset):
     batch_steps = 0
 
     early_stopping = EarlyStopping(patience=5, verbose=False)
+    best_loss = float('inf')
+    patience = 5
+    counter = 0
 
     for epoch in range(args.epochs):
         epoch_loss_list = []
@@ -262,7 +271,18 @@ def prompt_contrast_train(args, model, train_dataset):
             model_to_save.save_pretrained(os.path.join(output_dir, "training_args.bin"))
 
         epoch_loss = np.mean(epoch_loss_list)
-        early_stopping(epoch_loss, model, args.save_model_path)
+        # early_stopping(epoch_loss, model, args.save_model_path)
+        if epoch_loss < best_loss:
+            best_loss = epoch_loss
+            counter = 0
+        else:
+            counter += 1
+            if counter >= patience:
+                logging.info(f"Early stopping at epoch {epoch + 1}")
+                model_to_save = model.module if hasattr(model, 'module') else model
+                logging.info(f"Saving model to {args.final_model_path}")
+                model_to_save.save_pretrained(args.final_model_path)
+                break
 
 
 
@@ -301,11 +321,11 @@ def setup_args():
 if __name__ == '__main__':
     args = setup_args()
     args.model_path, args.vocab_path = '', './voc/vocab.txt'
-    args.train_raw_path = '../data/prompt_data/'
+    args.train_raw_path = './data/prompt_data/test_data_new.csv'
     
     initialize_from_vocab = False
     tokenizer = BertTokenizer(vocab_file=args.vocab_path)
-    model = GPT2LMHeadModel.from_pretrained('./')
+    model = GPT2LMHeadModel.from_pretrained('./small_final_model')
     s_wte = SoftEmbedding(model.get_input_embeddings(),
                           n_tokens=args.n_tokens,
                           initialize_from_vocab=initialize_from_vocab)

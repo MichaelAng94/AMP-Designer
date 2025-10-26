@@ -6,6 +6,7 @@ import torch
 import argparse
 import numpy as np
 import pandas as pd
+import logging
 # from rouge import Rouge
 from tqdm.auto import tqdm
 from torch.optim import AdamW, Adam
@@ -17,6 +18,11 @@ from torch.nn import CrossEntropyLoss
 
 from early_stop.pytorchtools import EarlyStopping
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 class MyDataset(Dataset):
     def __init__(self, data_list):
@@ -32,8 +38,8 @@ class MyDataset(Dataset):
 
 def setup_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_path', default="", type=str, help='')
-    parser.add_argument('--vocab_path', default="", type=str, help='')
+    parser.add_argument('--model_path', default="new_model", type=str, help='')
+    parser.add_argument('--vocab_path', default="./voc/vocab.txt", type=str, help='')
     parser.add_argument('--save_model_path', default="small_save_model", type=str, help='')
     parser.add_argument('--final_model_path', default="small_final_model", type=str, help='')
     parser.add_argument('--train_raw_path', default='train_raw_data.txt', type=str, help='')
@@ -89,7 +95,7 @@ def data_loader(args, train_data_path, tokenizer, shuffle):
     with open(train_data_path, "r") as f:
         reader = csv.reader(f)
         data = list(reader)
-    print("数据总行数:{}".format(len(data)))
+    logging.info("数据总行数:{}".format(len(data)))
 
     random.shuffle(data)
 
@@ -140,12 +146,14 @@ def train(args, model, dataloader,eval_dataloader):
     model.train()
     batch_steps = 0
     early_stopping = EarlyStopping(patience=5, verbose=False)
+    best_loss = float('inf')
+    patience = 5
 
     for epoch in range(args.epochs):
         epoch_loss_list = []
         print("\n")
         print("***********")
-        print(optimizer.state_dict()['param_groups'][0]['lr'])
+        logging.info(optimizer.state_dict()['param_groups'][0]['lr'])
         print("***********")
         print("\n")
         for batch in dataloader:
@@ -161,7 +169,7 @@ def train(args, model, dataloader,eval_dataloader):
             optimizer.zero_grad()
 
             if batch_steps % args.log_step == 0:
-                print("train epoch {}/{}, batch {}/{}, loss {}, accuracy {}".format(
+                logging.info("train epoch {}/{}, batch {}/{}, loss {}, accuracy {}".format(
                     epoch, args.epochs,
                     batch_steps,
                     num_training_steps,
@@ -170,10 +178,21 @@ def train(args, model, dataloader,eval_dataloader):
 
             epoch_loss_list.append(loss.cpu().detach().numpy())
         epoch_loss = evaluate(model,eval_dataloader)
-        early_stopping(epoch_loss, model, args.save_model_path)
+        # early_stopping(epoch_loss, model, args.save_model_path)
+        if epoch_loss < best_loss:
+            best_loss = epoch_loss
+            counter = 0
+        else:
+            counter += 1
+            if counter >= patience:
+                logging.info(f"Early stopping at epoch {epoch + 1}")
+                model_to_save = model.module if hasattr(model, 'module') else model
+                logging.info(f"Saving model to {args.final_model_path}")
+                model_to_save.save_pretrained(args.final_model_path)
+                break
 
-        model_to_save = model.module if hasattr(model, 'module') else model
-        model_to_save.save_pretrained(args.final_model_path)
+        # model_to_save = model.module if hasattr(model, 'module') else model
+        # model_to_save.save_pretrained(args.final_model_path)
 
 
 def evaluate(model, dataloader):
@@ -205,7 +224,7 @@ def evaluate(model, dataloader):
     # early_stopping(epoch_loss, model, args.save_model_path)
 
 
-    print("loss: {},".format(np.mean(loss_list)),
+    logging.info("loss: {},".format(np.mean(loss_list)),
           "accuracy: {}.".format(np.mean(acc_list)))
     return epoch_loss
 
@@ -220,8 +239,8 @@ def get_parameter_number(model):
 
 if __name__ == '__main__':
     args = setup_args()
-    args.model_path, args.vocab_path = '', './my_token/vocab.txt'
-    args.train_raw_path = '../data/uniprot/space_canonical_uniport.csv'
+    args.model_path, args.vocab_path = 'new_model', './voc/vocab.txt'
+    args.train_raw_path = './data/uniprot/uniport_seq.csv'
 
 
     tokenizer = BertTokenizer(vocab_file=args.vocab_path)

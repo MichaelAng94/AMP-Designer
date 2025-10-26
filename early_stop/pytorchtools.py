@@ -59,9 +59,14 @@ class EarlyStopping:
         print('now best_score:', self.best_score)
 
         model_to_save = model.module if hasattr(model, 'module') else model
-        model_to_save.save_pretrained(model_name)
-
-
-
+        if hasattr(model, 'save_pretrained'):
+            model_to_save.save_pretrained(model_name)
+        else:
+            # 对于普通PyTorch模型，使用torch.save
+            torch.save({
+                'model_state_dict': model_to_save.state_dict(),
+                'val_loss': val_loss,
+                'counter': self.counter
+            }, model_name + '.pth')
 
         self.val_loss_min = val_loss

@@ -23,7 +23,7 @@ class MyDataset(Dataset):
 
 def setup_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_path', default="", type=str, help='')
+    parser.add_argument('--model_path', default="./small_final_model", type=str, help='')
     parser.add_argument('--vocab_path', default="", type=str, help='')
     parser.add_argument('--batch_size', default=128, type=int, required=False, help='batch size')
     parser.add_argument('--epochs', default=1001, type=int, required=False, help='epochs')
@@ -68,7 +68,25 @@ def predict(model, tokenizer, batch_size, text=""):
 
         logits = F.softmax(logits[:,-1,:])
 
-        last_token_id = torch.multinomial(logits, 1)
+        if torch.isnan(logits).any() or torch.isinf(logits).any():
+            print(f"Warning: Invalid values in probability distribution - NaN: {torch.isnan(logits).any()}, Inf: {torch.isinf(logits).any()}")
+            prob = torch.nan_to_num(logits, nan=0.0, posinf=1.0, neginf=0.0)
+            
+        # 确保非负
+        prob = torch.clamp(prob, min=0)
+            
+        # 归一化
+        prob_sum = prob.sum(dim=-1, keepdim=True)
+        zero_mask = (prob_sum == 0)
+        if zero_mask.any():
+            print("Warning: Zero probability sum, using uniform distribution")
+            # 对于和为0的情况，使用均匀分布
+            uniform_prob = torch.ones_like(prob) / prob.size(-1)
+            prob = torch.where(zero_mask, uniform_prob, prob / prob_sum)
+        else:
+            prob = prob / prob_sum
+
+        last_token_id = torch.multinomial(prob, 1)
         # .detach().to('cpu').numpy()
         EOS_sampled = (last_token_id == tokenizer.sep_token_id)
         finished = torch.ge(finished + EOS_sampled, 1)
@@ -98,13 +116,20 @@ def get_parameter_number(model):
 
 if __name__ == '__main__':
     args = setup_args()
-    args.model_path, args.vocab_path = '', './my_token/vocab.txt'
+    args.model_path, args.vocab_path = '', './voc/vocab.txt'
 
 
     tokenizer = BertTokenizer(vocab_file=args.vocab_path)
 
-    model = GPT2LMHeadModel.from_pretrained(args.model_path)
+    tokenizer.bos_token_id = tokenizer.cls_token_id
+    tokenizer.eos_token_id = tokenizer.sep_token_id
 
+    model = GPT2LMHeadModel.from_pretrained('./final_prompt_model')
+
+    print(f"BOS token: {tokenizer.bos_token_id} -> {tokenizer.convert_ids_to_tokens([tokenizer.bos_token_id])}")
+    print(f"EOS token: {tokenizer.eos_token_id} -> {tokenizer.convert_ids_to_tokens([tokenizer.eos_token_id])}")
+    print(f"PAD token: {tokenizer.pad_token_id} -> {tokenizer.convert_ids_to_tokens([tokenizer.pad_token_id])}")
+    
     output = []
     Seq_all = []
     for i in range(100):

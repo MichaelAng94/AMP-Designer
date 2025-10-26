@@ -70,10 +70,29 @@ def sample(args, model, tokenizer, batch_size, text=""):
         logits = outputs.logits
 
         logits = top_k_top_p_filtering(logits, top_k=args.top_k, top_p=args.top_p)
-        prob = F.softmax(logits[:, -1, :])
+        
+        prob = F.softmax(logits[:, -1, :], dim=-1)
 
         log_prob = F.log_softmax(logits[:, -1, :], dim=1)
 
+        if torch.isnan(prob).any() or torch.isinf(prob).any():
+            print(f"Warning: Invalid values in probability distribution - NaN: {torch.isnan(prob).any()}, Inf: {torch.isinf(prob).any()}")
+            prob = torch.nan_to_num(prob, nan=0.0, posinf=1.0, neginf=0.0)
+            
+        # 确保非负
+        prob = torch.clamp(prob, min=0)
+            
+        # 归一化
+        prob_sum = prob.sum(dim=-1, keepdim=True)
+        zero_mask = (prob_sum == 0)
+        if zero_mask.any():
+            print("Warning: Zero probability sum, using uniform distribution")
+            # 对于和为0的情况，使用均匀分布
+            uniform_prob = torch.ones_like(prob) / prob.size(-1)
+            prob = torch.where(zero_mask, uniform_prob, prob / prob_sum)
+        else:
+            prob = prob / prob_sum
+            
         last_token_id = torch.multinomial(prob, 1)
         sequences.append(last_token_id.view(-1, 1))
         # Flatten the tokens
@@ -109,8 +128,8 @@ if __name__ == '__main__':
 
     args = setup_args()
     n_steps = args.n_steps
-    args.model_bin_path, args.vocab_path = './model_ckpt/pytorch_model.bin', '../voc/vocab.txt'
-    args.model_path = './model_ckpt/'
+    args.model_bin_path, args.vocab_path = './final_prompt_model/pytorch_model.bin', './voc/vocab.txt'
+    args.model_path = './final_prompt_model/'
 
     tokenizer = BertTokenizer(vocab_file=args.vocab_path)
 
