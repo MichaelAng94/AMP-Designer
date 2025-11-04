@@ -1,6 +1,8 @@
 import os
+import logging
 import random
 import time
+from peft import PeftModel
 import torch
 import argparse
 import numpy as np
@@ -9,16 +11,22 @@ import pandas as pd
 # from torchinfo import summary
 from tqdm.auto import tqdm
 from torch.optim import AdamW, Adam
-from transformers import get_scheduler, GPT2Config
+from transformers import GptOssConfig, GptOssForCausalLM, get_scheduler, GPT2Config
 from torch.utils.data import Dataset, DataLoader
 from transformers.models.gpt2 import GPT2LMHeadModel
 from transformers import BertTokenizer
 from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
+from safetensors.torch import load_file
 
 # from early_stop.pytorchtools import EarlyStopping
 from soft_prompt_embedding import SoftEmbedding
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -118,7 +126,7 @@ def data_loader(args, train_data_path, tokenizer, shuffle):
     data_list = []
 
     train_data = pd.read_csv(train_data_path, header=None).values.flatten().tolist()
-    print("数据总行数:{}".format(len(train_data)))
+    logging.info("数据总行数:{}".format(len(train_data)))
 
     for data_i in tqdm(train_data):
         data_list.append(tokenizer.encode(data_i, padding="max_length", truncation=True, max_length=34,
@@ -213,4 +221,35 @@ def prompt_model_loader(bin_path,model_dir):
     del prompt_model_load
     model.set_input_embeddings(s_wte)
 
+    return model
+
+def prompt_oss_loader(tokenizer, model_dir):
+    prompt_state = load_file(f"{model_dir}/adapter_model.safetensors")
+    config = GptOssConfig.from_json_file(f'{model_dir}/adapter_config.json')
+
+    config.num_hidden_layers=6          # 原 36
+    config.num_experts_per_tok=1        # 原 4
+    config.num_local_experts=32          # 原 128
+    # config.sliding_window=64            # 原 128
+    config.pad_token_id=tokenizer.pad_token_id
+    config.bos_token_id=tokenizer.bos_token_id
+    config.eos_token_id=tokenizer.eos_token_id
+    base_model = GptOssForCausalLM.from_pretrained(
+        "openai/gpt-oss-20b",          # 或你训练时用的 base 模型路径
+        config=config
+    )
+
+    logging.info(f"model config:{base_model.vocab_size}")
+    model = PeftModel.from_pretrained(base_model, model_dir)
+
+    s_wte = SoftEmbedding(model.get_input_embeddings(),
+                          n_tokens=10,
+                          initialize_from_vocab=True)
+    # logging.info(list(prompt_state.keys()))
+    # s_wte.learned_embedding.data = prompt_state['embed_tokens.learned_embedding']
+    # s_wte.wte.weight.data = prompt_state['embed_tokens.wte.weight']
+
+    # del prompt_state
+    model.set_input_embeddings(s_wte)
+    model.gradient_checkpointing_enable()
     return model

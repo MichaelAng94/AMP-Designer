@@ -1,21 +1,22 @@
-import gzip
-import pickle
 import time
 import torch
 import argparse
+import logging
 
 import numpy as np
-from torch.utils.data import Dataset
 from tqdm import tqdm
 from transformers import BertTokenizer
-from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
 
 from AMP_distiilation import RNN
-from utils import calculate_likelihood_loss, top_k_top_p_filtering, unique, decode, prompt_model_loader, \
-    Variable
+from utils import prompt_oss_loader, top_k_top_p_filtering, Variable
 from early_stop.pytorchtools import EarlyStopping
-from soft_prompt_embedding import SoftEmbedding
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 def setup_args():
     parser = argparse.ArgumentParser()
@@ -65,7 +66,7 @@ def sample(args, model, tokenizer, batch_size, text=""):
         try:
             outputs = model(**inputs)
         except Exception as e:
-            print(e)
+            logging.info(e)
 
         logits = outputs.logits
 
@@ -76,7 +77,7 @@ def sample(args, model, tokenizer, batch_size, text=""):
         log_prob = F.log_softmax(logits[:, -1, :], dim=1)
 
         if torch.isnan(prob).any() or torch.isinf(prob).any():
-            print(f"Warning: Invalid values in probability distribution - NaN: {torch.isnan(prob).any()}, Inf: {torch.isinf(prob).any()}")
+            logging.info(f"Warning: Invalid values in probability distribution - NaN: {torch.isnan(prob).any()}, Inf: {torch.isinf(prob).any()}")
             prob = torch.nan_to_num(prob, nan=0.0, posinf=1.0, neginf=0.0)
             
         # 确保非负
@@ -86,7 +87,7 @@ def sample(args, model, tokenizer, batch_size, text=""):
         prob_sum = prob.sum(dim=-1, keepdim=True)
         zero_mask = (prob_sum == 0)
         if zero_mask.any():
-            print("Warning: Zero probability sum, using uniform distribution")
+            logging.info("Warning: Zero probability sum, using uniform distribution")
             # 对于和为0的情况，使用均匀分布
             uniform_prob = torch.ones_like(prob) / prob.size(-1)
             prob = torch.where(zero_mask, uniform_prob, prob / prob_sum)
@@ -103,13 +104,15 @@ def sample(args, model, tokenizer, batch_size, text=""):
         EOS_sampled = (last_token_id == tokenizer.sep_token_id)
         finished = torch.ge(finished + EOS_sampled, 1)
         if torch.prod(finished) == 1:
-            # print('End')
+            # logging.info('End')
             break
 
         # last_token = tokenizer.convert_ids_to_tokens(last_token_id)
         input_tensor = torch.cat((input_tensor, last_token_id.detach().to('cpu')), 1)
         # Seq_list.append(last_token)
     sequences = torch.cat(sequences, 1)
+    vocab_size = len(tokenizer)
+    sequences = torch.clamp(sequences, 0, vocab_size - 1)
     # sequences = sequences.detach()
     # Seq_list = np.array(Seq_list).T
     return sequences.data, log_probs_list
@@ -129,11 +132,11 @@ if __name__ == '__main__':
     args = setup_args()
     n_steps = args.n_steps
     args.model_bin_path, args.vocab_path = './final_prompt_model/pytorch_model.bin', './voc/vocab.txt'
-    args.model_path = './final_prompt_model/'
+    args.model_path = './final_oss_prompt_model'
 
     tokenizer = BertTokenizer(vocab_file=args.vocab_path)
 
-    Teacher = prompt_model_loader(args.model_bin_path, args.model_path)
+    Teacher = prompt_oss_loader(tokenizer, args.model_path)
 
     Student = RNN(tokenizer)
 
@@ -153,6 +156,13 @@ if __name__ == '__main__':
         # unique_idxs = unique(seqs)
         # seqs = seqs[unique_idxs]
         # agent_likelihood = agent_likelihood[unique_idxs]
+        
+        # 再次检查索引范围
+        vocab_size = len(tokenizer)
+        logging.info(f"vocab_size: {vocab_size}")
+        if (seqs >= vocab_size).any() or (seqs < 0).any():
+            logging.warning(f"Invalid token indices detected: min={seqs.min()}, max={seqs.max()}, vocab_size={vocab_size}")
+            seqs = torch.clamp(seqs, 0, vocab_size - 1)
 
         # Get prior likelihood and score
         prior_likelihood, hard_loss = Student.likelihood(seqs)
@@ -173,7 +183,7 @@ if __name__ == '__main__':
         total_loss.append(loss.item())
 
         if step % 100 == 0 and step != 0:
-            # print(optim.state_dict()['param_groups'][0]['lr'])
+            # logging.info(optim.state_dict()['param_groups'][0]['lr'])
             # decrease_learning_rate(optim, decrease_by=0.03)
             tqdm.write("*" * 50)
             tqdm.write("step {:3d}    loss: {:5.2f}\n".format(step, loss.item()))
@@ -181,7 +191,7 @@ if __name__ == '__main__':
         early_stopping(np.mean(total_loss), Student.rnn, 'AMP_rnn_topk')
 
         if early_stopping.early_stop:
-            print("Early stopping")
+            logging.info("Early stopping")
             break
 
 

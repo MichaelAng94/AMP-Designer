@@ -12,8 +12,12 @@ from torch.optim import AdamW, Adam
 from transformers import get_scheduler, GPT2Config
 from torch.utils.data import Dataset, DataLoader, TensorDataset, RandomSampler, DistributedSampler
 from transformers.models.gpt2 import GPT2LMHeadModel
-from transformers import BertTokenizer
+from transformers import (
+    GptOssConfig, GptOssForCausalLM, BertTokenizer,
+    get_linear_schedule_with_warmup
+)
 from torch.nn import CrossEntropyLoss
+from peft import PeftModel
 
 from early_stop.pytorchtools import EarlyStopping
 from soft_prompt_embedding import SoftEmbedding
@@ -125,15 +129,6 @@ def calculate_loss_and_accuracy_(outputs, labels, device):
 
     # _, preds = shift_logits.max(dim=-1)
     not_ignore = shift_labels.ne(tokenizer.pad_token_id)
-    # num_targets = not_ignore.long().sum().item()
-    #
-    # correct = (shift_labels == preds) & not_ignore
-    # correct = correct.float().sum()
-    #
-    # accuracy = correct / num_targets
-    # loss = loss / num_targets
-
-    # rouge_score = rouge(not_ignore, shift_labels, preds)
     return loss, not_ignore
 
 
@@ -143,14 +138,14 @@ def prompt_contrast_train(args, model, train_dataset):
 
     num_training_steps = args.epochs * len(train_dataloader)
     # Prepare optimizer and schedule (linear warmup and decay)
-    for param in model.transformer.parameters():
+    for param in model.parameters():
         param.requires_grad = False
     for param in model.lm_head.parameters():
         param.requires_grad = False
 
-    model.transformer.wte.learned_embedding.requires_grad = True
+    model.get_input_embeddings().learned_embedding.requires_grad = True
 
-    optimizer = AdamW([model.transformer.wte.learned_embedding], lr=args.lr)
+    optimizer = AdamW([model.get_input_embeddings().learned_embedding], lr=args.lr)
     lr_scheduler = get_scheduler(
         name="linear",
         optimizer=optimizer,
@@ -248,6 +243,7 @@ def prompt_contrast_train(args, model, train_dataset):
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad()
+            torch.cuda.empty_cache()
 
             if batch_steps % args.log_step == 0:
                 print("train epoch {}/{}, batch {}/{}, loss {}".format(
@@ -260,15 +256,15 @@ def prompt_contrast_train(args, model, train_dataset):
             epoch_loss_list.append(loss.cpu().detach().numpy())
 
             # Save model checkpoint
-            output_dir = os.path.join(args.save_model_path, "checkpoint-{}".format(batch_steps))
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
-            model_to_save = (
-                model.module if hasattr(model, "module") else model
-            )  # Take care of distributed/parallel training
-            model_to_save.save_pretrained(output_dir)
-            tokenizer.save_pretrained(output_dir)
-            model_to_save.save_pretrained(os.path.join(output_dir, "training_args.bin"))
+            # output_dir = os.path.join(args.save_model_path, "checkpoint-{}".format(batch_steps))
+            # if not os.path.exists(output_dir):
+            #     os.makedirs(output_dir)
+            # model_to_save = (
+            #     model.module if hasattr(model, "module") else model
+            # )  # Take care of distributed/parallel training
+            # model_to_save.save_pretrained(output_dir)
+            # tokenizer.save_pretrained(output_dir)
+            # model_to_save.save_pretrained(os.path.join(output_dir, "training_args.bin"))
 
         epoch_loss = np.mean(epoch_loss_list)
         # early_stopping(epoch_loss, model, args.save_model_path)
@@ -281,7 +277,7 @@ def prompt_contrast_train(args, model, train_dataset):
                 logging.info(f"Early stopping at epoch {epoch + 1}")
                 model_to_save = model.module if hasattr(model, 'module') else model
                 logging.info(f"Saving model to {args.final_model_path}")
-                model_to_save.save_pretrained(args.final_model_path)
+                model_to_save.save_pretrained(os.path.join(args.final_model_path, "pytorch_model.bin"))
                 break
 
 
@@ -292,10 +288,10 @@ def setup_args():
     parser.add_argument('--model_path', default="", type=str, help='')
     parser.add_argument('--vocab_path', default="", type=str, help='')
     parser.add_argument('--save_model_path', default="prompt_model", type=str, help='')
-    parser.add_argument('--final_model_path', default="final_prompt_model", type=str, help='')
+    parser.add_argument('--final_model_path', default="final_oss_prompt_model", type=str, help='')
     parser.add_argument('--train_raw_path', default='train_raw_data.txt', type=str, help='')
     parser.add_argument('--eval_raw_path', default='test_raw_data.txt', type=str, help='')
-    parser.add_argument('--batch_size', default=256, type=int, required=False, help='batch size')
+    parser.add_argument('--batch_size', default=64, type=int, required=False, help='batch size')
     parser.add_argument('--epochs', default=200, type=int, required=False, help='epochs')
     parser.add_argument('--warmup_steps', default=500, type=int, required=False, help='warm up steps')
     parser.add_argument('--lr', default=1e-4, type=float, required=False, help='learn rate')
@@ -325,10 +321,36 @@ if __name__ == '__main__':
     
     initialize_from_vocab = False
     tokenizer = BertTokenizer(vocab_file=args.vocab_path)
-    model = GPT2LMHeadModel.from_pretrained('./small_final_model')
+
+    # model_id = "./gptoss_final_model"          # ← 你上一步训练好的 OSS 模型
+    config = GptOssConfig.from_json_file('./gptoss_final_model/adapter_config.json')
+    logging.info(f"number of hidden layers:{config.num_hidden_layers}")
+    logging.info(f"number of experts per token:{config.num_experts_per_tok}")
+    logging.info(f"number of local experts:{config.num_local_experts}")
+    logging.info(f"sliding window:{config.sliding_window}")
+    config.num_hidden_layers=6          # 原 36
+    config.num_experts_per_tok=1        # 原 4
+    config.num_local_experts=32          # 原 128
+    # config.sliding_window=64            # 原 128
+    config.pad_token_id=tokenizer.pad_token_id
+    config.bos_token_id=tokenizer.bos_token_id
+    config.eos_token_id=tokenizer.eos_token_id
+    # model = GptOssForCausalLM.from_pretrained(
+    #     pretrained_model_name_or_path='./gptoss_final_model',
+    #     config=config
+    # )
+    base_model = GptOssForCausalLM.from_pretrained(
+        "openai/gpt-oss-20b",          # 或你训练时用的 base 模型路径
+        config=config
+    )
+
+    # 2. 再加载 LoRA 适配器
+    model = PeftModel.from_pretrained(base_model, "./gptoss_final_model")
+
     s_wte = SoftEmbedding(model.get_input_embeddings(),
                           n_tokens=args.n_tokens,
                           initialize_from_vocab=initialize_from_vocab)
     model.set_input_embeddings(s_wte)
+    model.gradient_checkpointing_enable()
     train_dataloader = load_and_cache_examples(args, args.train_raw_path, tokenizer=tokenizer)
     prompt_contrast_train(args, model, train_dataloader)
