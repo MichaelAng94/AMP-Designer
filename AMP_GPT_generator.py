@@ -1,4 +1,5 @@
 import time
+from peft import PeftModel
 import torch
 import argparse
 import numpy as np
@@ -6,7 +7,7 @@ import pandas as pd
 
 from torch.utils.data import Dataset, DataLoader
 from transformers.models.gpt2 import GPT2LMHeadModel
-from transformers import BertTokenizer
+from transformers import BertTokenizer, GptOssConfig, GptOssForCausalLM
 import torch.nn.functional as F
 
 class MyDataset(Dataset):
@@ -66,11 +67,16 @@ def predict(model, tokenizer, batch_size, text=""):
         outputs = model(**inputs)
         logits = outputs.logits
 
-        logits = F.softmax(logits[:,-1,:])
+        logits = F.softmax(logits[:,-1,:], dim=-1)
 
-        if torch.isnan(logits).any() or torch.isinf(logits).any():
-            print(f"Warning: Invalid values in probability distribution - NaN: {torch.isnan(logits).any()}, Inf: {torch.isinf(logits).any()}")
-            prob = torch.nan_to_num(logits, nan=0.0, posinf=1.0, neginf=0.0)
+        # if torch.isnan(logits).any() or torch.isinf(logits).any():
+        #     print(f"Warning: Invalid values in probability distribution - NaN: {torch.isnan(logits).any()}, Inf: {torch.isinf(logits).any()}")
+        #     prob = torch.nan_to_num(logits, nan=0.0, posinf=1.0, neginf=0.0)
+        prob = logits  # 先初始化为原始logits
+        
+        if torch.isnan(prob).any() or torch.isinf(prob).any():
+            print(f"Warning: Invalid values in probability distribution - NaN: {torch.isnan(prob).any()}, Inf: {torch.isinf(prob).any()}")
+            prob = torch.nan_to_num(prob, nan=0.0, posinf=1.0, neginf=0.0)
             
         # 确保非负
         prob = torch.clamp(prob, min=0)
@@ -124,16 +130,31 @@ if __name__ == '__main__':
     tokenizer.bos_token_id = tokenizer.cls_token_id
     tokenizer.eos_token_id = tokenizer.sep_token_id
 
-    model = GPT2LMHeadModel.from_pretrained('./final_prompt_model')
+    # model = GPT2LMHeadModel.from_pretrained('./final_prompt_model')
 
     print(f"BOS token: {tokenizer.bos_token_id} -> {tokenizer.convert_ids_to_tokens([tokenizer.bos_token_id])}")
     print(f"EOS token: {tokenizer.eos_token_id} -> {tokenizer.convert_ids_to_tokens([tokenizer.eos_token_id])}")
     print(f"PAD token: {tokenizer.pad_token_id} -> {tokenizer.convert_ids_to_tokens([tokenizer.pad_token_id])}")
     
+    config = GptOssConfig.from_json_file(f'./final_oss_prompt_model/adapter_config.json')
+
+    config.num_hidden_layers=6          # 原 36
+    config.num_experts_per_tok=1        # 原 4
+    config.num_local_experts=32          # 原 128
+    config.sliding_window=64            # 原 128
+    config.pad_token_id=tokenizer.pad_token_id
+    config.bos_token_id=tokenizer.bos_token_id
+    config.eos_token_id=tokenizer.eos_token_id
+    base_model = GptOssForCausalLM.from_pretrained(
+        "openai/gpt-oss-20b",          # 或你训练时用的 base 模型路径
+        config=config
+    )
+    model = PeftModel.from_pretrained(base_model, './final_oss_prompt_model')
+    
     output = []
     Seq_all = []
     for i in range(100):
-        Seq_list = predict(model,tokenizer,batch_size=128)
+        Seq_list = predict(model,tokenizer,batch_size=32)
 
         Seq_all.extend(Seq_list)
     for j in Seq_all:
@@ -141,6 +162,6 @@ if __name__ == '__main__':
 
     output = pd.DataFrame(output)
 
-    output.to_csv('generate_seq.csv', index=False, header=False, sep=' ')
+    output.to_csv('generate_seq_oss.csv', index=False, header=False, sep=' ')
 
 

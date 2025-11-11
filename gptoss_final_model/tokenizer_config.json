@@ -1,22 +1,6 @@
 {
   "added_tokens_decoder": {
-    "20": {
-      "content": "[UNK]",
-      "lstrip": false,
-      "normalized": false,
-      "rstrip": false,
-      "single_word": false,
-      "special": true
-    },
-    "21": {
-      "content": "[SEP]",
-      "lstrip": false,
-      "normalized": false,
-      "rstrip": false,
-      "single_word": false,
-      "special": true
-    },
-    "22": {
+    "0": {
       "content": "[PAD]",
       "lstrip": false,
       "normalized": false,
@@ -24,7 +8,15 @@
       "single_word": false,
       "special": true
     },
-    "23": {
+    "1": {
+      "content": "[UNK]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "2": {
       "content": "[CLS]",
       "lstrip": false,
       "normalized": false,
@@ -32,7 +24,15 @@
       "single_word": false,
       "special": true
     },
-    "24": {
+    "3": {
+      "content": "[SEP]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "4": {
       "content": "[MASK]",
       "lstrip": false,
       "normalized": false,

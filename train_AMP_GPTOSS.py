@@ -110,7 +110,7 @@ def calculate_loss_and_accuracy(outputs, labels, pad_id, device):
     return loss / num.clamp(min=1), acc
 
 # ---------- 训练 ----------
-def train(args, model, train_loader, eval_loader, tokenizer):
+def train(args, model, base_model, train_loader, eval_loader, tokenizer):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
     model.train()
@@ -160,7 +160,7 @@ def train(args, model, train_loader, eval_loader, tokenizer):
                 logging.info(f"Early stopping at epoch {epoch + 1}")
                 model_to_save = model.module if hasattr(model, 'module') else model
                 logging.info(f"Saving model to {args.final_model_path}")
-                model_to_save.save_pretrained(args.final_model_path)
+                model_to_save.save_pretrained(os.path.join(args.final_model_path, "oss_model.bin"))
                 break
         # early_stop(eval_loss, model)
         # if early_stop.early_stop:
@@ -169,6 +169,7 @@ def train(args, model, train_loader, eval_loader, tokenizer):
 
     # 保存最终模型
     os.makedirs(args.final_model_path, exist_ok=True)
+    base_model.save_pretrained(args.final_model_path)
     model.save_pretrained(args.final_model_path)
     tokenizer.save_pretrained(args.final_model_path)
     logging.info(f'模型已保存至 {args.final_model_path}')
@@ -264,6 +265,7 @@ def main():
     tokenizer = build_tokenizer(args.vocab_path)
     
     # 设置特殊token ID
+    none = tokenizer.bos_token_id
     tokenizer.bos_token_id = tokenizer.cls_token_id
     tokenizer.eos_token_id = tokenizer.sep_token_id
 
@@ -314,9 +316,9 @@ def main():
     
     # 调整词表大小以匹配自定义词汇表
     new_vocab_size = len(tokenizer)
-    model = resize_token_embeddings(model, tokenizer, new_vocab_size)
+    base_model = resize_token_embeddings(model, tokenizer, new_vocab_size)
     
-    logging.info(f"调整词表大小: {model.config.vocab_size} -> {new_vocab_size}")
+    logging.info(f"调整词表大小: {base_model.config.vocab_size} -> {new_vocab_size}")
     # if hasattr(model, 'loss_function'):
     #     logging.info(f"损失函数词汇表大小: {model.loss_function}")
 
@@ -333,9 +335,9 @@ def main():
             lora_dropout=0.05,
             target_modules=["q_proj", "k_proj", "v_proj"]
         )
-        model = get_peft_model(model, lora_conf)
+        model = get_peft_model(base_model, lora_conf)
         model.print_trainable_parameters()
-    train(args, model, train_loader, eval_loader, tokenizer)
+    train(args, model, base_model, train_loader, eval_loader, tokenizer)
 
 if __name__ == '__main__':
     main()

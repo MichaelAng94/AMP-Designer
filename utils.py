@@ -230,7 +230,7 @@ def prompt_oss_loader(tokenizer, model_dir):
     config.num_hidden_layers=6          # 原 36
     config.num_experts_per_tok=1        # 原 4
     config.num_local_experts=32          # 原 128
-    # config.sliding_window=64            # 原 128
+    config.sliding_window=64            # 原 128
     config.pad_token_id=tokenizer.pad_token_id
     config.bos_token_id=tokenizer.bos_token_id
     config.eos_token_id=tokenizer.eos_token_id
@@ -245,7 +245,7 @@ def prompt_oss_loader(tokenizer, model_dir):
     s_wte = SoftEmbedding(model.get_input_embeddings(),
                           n_tokens=10,
                           initialize_from_vocab=True)
-    # logging.info(list(prompt_state.keys()))
+    logging.info(list(prompt_state.keys()))
     # s_wte.learned_embedding.data = prompt_state['embed_tokens.learned_embedding']
     # s_wte.wte.weight.data = prompt_state['embed_tokens.wte.weight']
 

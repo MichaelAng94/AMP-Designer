@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 from torch.optim import AdamW, Adam
-from transformers import get_scheduler, GPT2Config
+from transformers import AutoConfig, AutoModelForCausalLM, get_scheduler, GPT2Config
 from torch.utils.data import Dataset, DataLoader, TensorDataset, RandomSampler, DistributedSampler
 from transformers.models.gpt2 import GPT2LMHeadModel
 from transformers import (
@@ -132,7 +132,7 @@ def calculate_loss_and_accuracy_(outputs, labels, device):
     return loss, not_ignore
 
 
-def prompt_contrast_train(args, model, train_dataset):
+def prompt_contrast_train(args, base_model, model, train_dataset):
     train_sampler = RandomSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.batch_size)
 
@@ -277,6 +277,7 @@ def prompt_contrast_train(args, model, train_dataset):
                 logging.info(f"Early stopping at epoch {epoch + 1}")
                 model_to_save = model.module if hasattr(model, 'module') else model
                 logging.info(f"Saving model to {args.final_model_path}")
+                base_model.save_pretrained(args.final_model_path)
                 model_to_save.save_pretrained(os.path.join(args.final_model_path, "pytorch_model.bin"))
                 break
 
@@ -323,26 +324,41 @@ if __name__ == '__main__':
     tokenizer = BertTokenizer(vocab_file=args.vocab_path)
 
     # model_id = "./gptoss_final_model"          # ← 你上一步训练好的 OSS 模型
-    config = GptOssConfig.from_json_file('./gptoss_final_model/adapter_config.json')
+    adapter_config = GptOssConfig.from_json_file('./gptoss_final_model/adapter_config.json')
+    logging.info(f"number of hidden layers:{adapter_config.num_hidden_layers}")
+    logging.info(f"number of experts per token:{adapter_config.num_experts_per_tok}")
+    logging.info(f"number of local experts:{adapter_config.num_local_experts}")
+    logging.info(f"sliding window:{adapter_config.sliding_window}")
+    logging.info(f"layer types:{len(adapter_config.layer_types)}")
+    adapter_config.num_hidden_layers=6          # 原 36
+    adapter_config.num_experts_per_tok=1        # 原 4
+    adapter_config.num_local_experts=32          # 原 128
+    adapter_config.sliding_window=64            # 原 128
+    adapter_config.pad_token_id=tokenizer.pad_token_id
+    adapter_config.bos_token_id=tokenizer.bos_token_id
+    adapter_config.eos_token_id=tokenizer.eos_token_id
+    config = AutoConfig.from_pretrained('./gptoss_final_model/config.json')
+    config.pad_token_id=tokenizer.pad_token_id
+    config.bos_token_id=tokenizer.bos_token_id
+    config.eos_token_id=tokenizer.eos_token_id
+    # model = GptOssForCausalLM.from_pretrained('./gptoss_final_model')
+    # config = model.config
     logging.info(f"number of hidden layers:{config.num_hidden_layers}")
     logging.info(f"number of experts per token:{config.num_experts_per_tok}")
     logging.info(f"number of local experts:{config.num_local_experts}")
     logging.info(f"sliding window:{config.sliding_window}")
-    config.num_hidden_layers=6          # 原 36
-    config.num_experts_per_tok=1        # 原 4
-    config.num_local_experts=32          # 原 128
-    # config.sliding_window=64            # 原 128
-    config.pad_token_id=tokenizer.pad_token_id
-    config.bos_token_id=tokenizer.bos_token_id
-    config.eos_token_id=tokenizer.eos_token_id
-    # model = GptOssForCausalLM.from_pretrained(
-    #     pretrained_model_name_or_path='./gptoss_final_model',
-    #     config=config
-    # )
+    logging.info(f"layer types:{len(config.layer_types)}")
+    
     base_model = GptOssForCausalLM.from_pretrained(
         "openai/gpt-oss-20b",          # 或你训练时用的 base 模型路径
-        config=config
+        config=adapter_config
     )
+
+    # base_model2 = GptOssForCausalLM.from_pretrained(
+    #     "./gptoss_final_model",          # 或你训练时用的 base 模型路径
+    #     config=config,
+    #     use_safetensors=True
+    # )
 
     # 2. 再加载 LoRA 适配器
     model = PeftModel.from_pretrained(base_model, "./gptoss_final_model")
@@ -353,4 +369,4 @@ if __name__ == '__main__':
     model.set_input_embeddings(s_wte)
     model.gradient_checkpointing_enable()
     train_dataloader = load_and_cache_examples(args, args.train_raw_path, tokenizer=tokenizer)
-    prompt_contrast_train(args, model, train_dataloader)
+    prompt_contrast_train(args, base_model, model, train_dataloader)

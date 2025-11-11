@@ -157,6 +157,9 @@ if __name__ == '__main__':
         # seqs = seqs[unique_idxs]
         # agent_likelihood = agent_likelihood[unique_idxs]
         
+        seqs = seqs.clamp(min=0, max=tokenizer.vocab_size - 1)   # 截断越界
+        seqs = seqs.long()
+        
         # 再次检查索引范围
         vocab_size = len(tokenizer)
         logging.info(f"vocab_size: {vocab_size}")
